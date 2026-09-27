@@ -16,6 +16,13 @@ remote_has_workflow() {
   git cat-file -e origin/main:.github/workflows/windows-build.yml 2>/dev/null
 }
 
+# ONESHOT=1: a single check that exits 0 if CI is already enabled remotely, 1 if the scope is still missing.
+# Used by the systemd timer, which retries on its own schedule and no-ops after success.
+if [ -n "${ONESHOT:-}" ]; then
+  if remote_has_workflow; then echo "$(date -Is) CI workflow already on origin/main — nothing to do"; exit 0; fi
+  if ! scope_present; then echo "$(date -Is) no workflow scope yet — will retry on the next timer tick"; exit 0; fi
+fi
+
 for _ in $(seq 1 180); do
   if scope_present; then
     if remote_has_workflow; then
