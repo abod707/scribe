@@ -84,11 +84,22 @@ npm run dist       # electron-builder --win  (produce the installer)
 ```
 
 `npm run verify` needs no API keys: it spins up a local server that mimics both providers (including a
-deliberate 429 to test retries) and asserts chunking, upload sizes, timestamp offsets, the map-reduce
-summary and every output file format.
+deliberate 429 to test retries and a Mistral-style 422 on an optional field) and asserts chunking,
+upload sizes, timestamp offsets, the map-reduce summary and every output file format.
 
-Windows builds are produced by `.github/workflows/windows-build.yml` on GitHub's Windows runner and
-attached to releases; the verification job runs first, so a release only exists if the pipeline tests pass.
+### Turning the Windows CI build on
+
+The workflow lives at [`ci/windows-build.yml`](ci/windows-build.yml), **not** in `.github/workflows/`,
+because a `gh` token without the `workflow` scope is refused permission to push that path. Enable it
+either way:
+
+- Web UI: **Add file → Create new file**, name it `.github/workflows/windows-build.yml`, paste the
+  contents of `ci/windows-build.yml`, commit.
+- Or from a terminal: `gh auth refresh -s workflow && mkdir -p .github/workflows && git mv ci/windows-build.yml .github/workflows/ && git commit -m "Enable Windows CI" && git push`.
+
+Once it exists, a push to `main` produces a download artifact and pushing a `v*` tag builds the
+installer, the portable zip and attaches both to the release. The verification job runs first, so a
+release only exists if the pipeline tests pass.
 
 ## Notes and limits
 
