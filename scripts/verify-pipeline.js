@@ -38,7 +38,7 @@ function check(name, fn) {
   }
 }
 
-const serverState = { transcriptionCalls: 0, transcriptionRequests: 0, chatCalls: 0, uploadBytes: [], sawMultipart: [], rateLimitedOnce: false, models: [], mapPrompts: 0 };
+const serverState = { transcriptionCalls: 0, transcriptionRequests: 0, chatCalls: 0, uploadBytes: [], sawMultipart: [], rateLimitedOnce: false, models: [], mapPrompts: 0, mistralCalls: 0, mistral422: 0 };
 
 async function readMultipart(req) {
   const chunks = [];
@@ -62,6 +62,14 @@ function startMockServer() {
         assert.ok(/multipart\/form-data/.test(info.contentType), 'transcription request was not multipart');
         assert.ok(req.headers.authorization?.startsWith('Bearer '), 'missing bearer token');
         serverState.transcriptionRequests += 1;
+        // Mistral's real API is pickier about optional fields; make the mock behave the same so the
+        // degradation path gets exercised.
+        if (url.startsWith('/v1/audio') && /timestamp_granularities/.test(info.body.toString('latin1'))) {
+          serverState.mistral422 += 1;
+          res.writeHead(422, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ detail: [{ msg: 'extra fields not permitted: timestamp_granularities' }] }));
+          return;
+        }
         if (!serverState.rateLimitedOnce) {
           serverState.rateLimitedOnce = true;
           res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
@@ -71,6 +79,7 @@ function startMockServer() {
         serverState.transcriptionCalls += 1;
         serverState.uploadBytes.push(info.fileBytes);
         serverState.sawMultipart.push(info.model);
+        if (url.startsWith('/v1/audio')) serverState.mistralCalls += 1;
         const part = serverState.transcriptionCalls;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
@@ -222,6 +231,31 @@ function makeAudio(file, seconds) {
     const stages = events.filter((e) => e.type === 'stage').map((e) => e.stage);
     assert.deepStrictEqual(stages, ['prepare', 'transcribe', 'summarize'], `saw ${stages.join(' -> ')}`);
   });
+
+  // Mistral path: rejected optional field must degrade instead of failing the part.
+  try {
+    const { transcribePart } = require('../src/main/transcribe');
+    const { prepareAudio } = require('../src/main/audio');
+    const prep = await prepareAudio(audio, { chunkSeconds: 60000, workDir: path.join(work, 'mistralparts'), onLog: () => {} });
+    const notes = [];
+    const res = await transcribePart({
+      providerId: 'mistral',
+      model: 'voxtral-mini-latest',
+      apiKey: 'test-key-5678',
+      file: prep.segments[0].file,
+      startSeconds: 0,
+      language: 'en',
+      onLog: (m) => notes.push(m)
+    });
+    assert.ok(res.text.length > 10, 'mistral transcription returned nothing');
+    assert.ok(serverState.mistral422 >= 1, 'mock never rejected the optional field, degradation path untested');
+    assert.ok(('' + notes.join(' ')).includes('rejected optional request fields'), 'no degradation note was logged');
+    assert.strictEqual(serverState.mistralCalls, 1, `expected 1 successful mistral call, got ${serverState.mistralCalls}`);
+    results.push('  PASS  Mistral path degrades when an optional field is rejected (422 -> retry without it)');
+  } catch (err) {
+    failures += 1;
+    results.push(`  FAIL  Mistral optional-field degradation\n        ${err.message}`);
+  }
 
   // async check: cancellation must abort cleanly
   try {

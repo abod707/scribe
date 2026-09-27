@@ -31,29 +31,58 @@ async function transcribePart({ providerId, model, apiKey, file, startSeconds = 
     );
   }
 
-  const payload = await postWithRetry({
-    providerId,
-    path: '/audio/transcriptions',
-    apiKey,
-    signal,
-    onLog,
-    makeBody: () => {
-      const form = new FormData();
-      const buf = fs.readFileSync(file);
-      form.append('file', new Blob([buf], { type: 'audio/mpeg' }), path.basename(file));
-      form.append('model', model);
-      if (language && language !== 'auto') form.append('language', language);
-      if (providerId === 'groq') {
-        // verbose_json gives us segment timestamps -> real .srt output.
-        form.append('response_format', 'verbose_json');
-        form.append('timestamp_granularities[]', 'segment');
-      } else {
-        form.append('timestamp_granularities[]', 'segment');
-        if (diarize) form.append('diarize', 'true');
-      }
-      return { body: form, headers: {} };
+  // Optional fields degrade one at a time: providers differ in which extras they accept, and a
+  // 422 on an optional flag should cost us the extras, not the whole job.
+  const optionalSets = [
+    { granularity: true, language: true, diarize: Boolean(diarize) },
+    { granularity: false, language: true, diarize: Boolean(diarize) && providerId !== 'mistral' },
+    { granularity: false, language: false, diarize: false }
+  ];
+
+  let payload;
+  let lastError;
+  for (let i = 0; i < optionalSets.length; i += 1) {
+    const opts = optionalSets[i];
+    try {
+      payload = await postWithRetry({
+        providerId,
+        path: '/audio/transcriptions',
+        apiKey,
+        signal,
+        onLog,
+        // Only retry hard on the first shape; a rejected optional flag fails fast and we degrade.
+        attempts: i === 0 ? 4 : 2,
+        makeBody: () => {
+          const form = new FormData();
+          const buf = fs.readFileSync(file);
+          form.append('file', new Blob([buf], { type: 'audio/mpeg' }), path.basename(file));
+          form.append('model', model);
+          if (opts.language && language && language !== 'auto') form.append('language', language);
+          if (providerId === 'groq') {
+            // verbose_json gives us segment timestamps -> real .srt output.
+            if (opts.granularity) {
+              form.append('response_format', 'verbose_json');
+              form.append('timestamp_granularities[]', 'segment');
+            }
+          } else {
+            if (opts.granularity) form.append('timestamp_granularities[]', 'segment');
+            if (opts.diarize) form.append('diarize', 'true');
+          }
+          return { body: form, headers: {} };
+        }
+      });
+      if (i > 0) onLog(`Retried part without ${optionalSets[i - 1].granularity ? 'timestamp granularity' : 'language'} — provider rejected the optional field.`);
+      lastError = null;
+      break;
+    } catch (err) {
+      if (err.cancelled) throw err;
+      lastError = err;
+      const rejectable = err.status === 400 || err.status === 422;
+      if (!rejectable || i === optionalSets.length - 1) throw err;
+      onLog(`${provider.label} rejected optional request fields (HTTP ${err.status}); retrying with fewer options…`);
     }
-  });
+  }
+  if (lastError) throw lastError;
 
   const text = String(payload?.text ?? '').trim();
   return { text, segments: normalizeSegments(payload, startSeconds), model: payload?.model || model };
