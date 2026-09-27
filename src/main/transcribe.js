@@ -1,0 +1,107 @@
+'use strict';
+/**
+ * Speech to text against Groq Whisper or Mistral Voxtral.
+ * Both are multipart POSTs to /audio/transcriptions, so one implementation covers them.
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { postWithRetry } = require('./http');
+const { getProvider } = require('./providers');
+
+function normalizeSegments(payload, startSeconds) {
+  const raw = Array.isArray(payload?.segments) ? payload.segments : [];
+  return raw
+    .map((s) => ({
+      start: Number(s.start ?? 0) + startSeconds,
+      end: Number(s.end ?? 0) + startSeconds,
+      text: String(s.text ?? '').trim(),
+      speaker: s.speaker ?? s.speaker_id ?? null
+    }))
+    .filter((s) => s.text);
+}
+
+async function transcribePart({ providerId, model, apiKey, file, startSeconds = 0, language, diarize, signal, onLog = () => {} }) {
+  const provider = getProvider(providerId);
+  const bytes = fs.statSync(file).size;
+  if (bytes > provider.maxUploadBytes) {
+    throw new Error(
+      `${path.basename(file)} is ${(bytes / 1048576).toFixed(1)} MB, over ${provider.label}'s ${(provider.maxUploadBytes / 1048576).toFixed(0)} MB cap. ` +
+      'Lower "Segment length" in Settings.'
+    );
+  }
+
+  const payload = await postWithRetry({
+    providerId,
+    path: '/audio/transcriptions',
+    apiKey,
+    signal,
+    onLog,
+    makeBody: () => {
+      const form = new FormData();
+      const buf = fs.readFileSync(file);
+      form.append('file', new Blob([buf], { type: 'audio/mpeg' }), path.basename(file));
+      form.append('model', model);
+      if (language && language !== 'auto') form.append('language', language);
+      if (providerId === 'groq') {
+        // verbose_json gives us segment timestamps -> real .srt output.
+        form.append('response_format', 'verbose_json');
+        form.append('timestamp_granularities[]', 'segment');
+      } else {
+        form.append('timestamp_granularities[]', 'segment');
+        if (diarize) form.append('diarize', 'true');
+      }
+      return { body: form, headers: {} };
+    }
+  });
+
+  const text = String(payload?.text ?? '').trim();
+  return { text, segments: normalizeSegments(payload, startSeconds), model: payload?.model || model };
+}
+
+/**
+ * Transcribe every part, optionally with bounded parallelism, preserving order.
+ * Returns { text, segments, parts: [{index, chars, seconds}] }.
+ */
+async function transcribeParts({
+  providerId, model, apiKey, segments, language, diarize = false,
+  concurrency = 2, signal, onLog = () => {}, onProgress = () => {}
+}) {
+  const results = new Array(segments.length);
+  let done = 0;
+  let cursor = 0;
+  let failure = null;
+
+  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, segments.length)) }, async () => {
+    while (true) {
+      if (failure) return;
+      if (signal && signal.aborted) return;
+      const i = cursor;
+      cursor += 1;
+      if (i >= segments.length) return;
+      const seg = segments[i];
+      try {
+        onProgress({ stage: 'transcribe', index: i, total: segments.length, state: 'start' });
+        onLog(`Transcribing part ${i + 1}/${segments.length} (${(seg.bytes / 1048576).toFixed(1)} MB)…`);
+        const t0 = Date.now();
+        const res = await transcribePart({ providerId, model, apiKey, file: seg.file, startSeconds: seg.startSeconds, language, diarize, signal, onLog });
+        results[i] = res;
+        done += 1;
+        onLog(`Part ${i + 1} done in ${((Date.now() - t0) / 1000).toFixed(1)}s — ${res.text.length} chars.`);
+        onProgress({ stage: 'transcribe', index: i, total: segments.length, state: 'done', done });
+      } catch (err) {
+        if (!failure) failure = err;
+        return;
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  if (failure) throw failure;
+
+  const text = results.map((r) => r?.text || '').filter(Boolean).join('\n\n');
+  const allSegments = results.flatMap((r) => r?.segments || []);
+  return { text, segments: allSegments, parts: results.map((r, i) => ({ index: i, chars: r?.text?.length || 0 })) };
+}
+
+module.exports = { transcribeParts, transcribePart };

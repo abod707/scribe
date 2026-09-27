@@ -1,0 +1,55 @@
+{
+  "name": "scribe",
+  "productName": "Scribe",
+  "version": "0.1.0",
+  "description": "Transcribe audio and video with free-tier APIs (Groq Whisper, Mistral Voxtral) and summarize the result with free-tier LLMs. Windows desktop app.",
+  "main": "src/main/main.js",
+  "author": "Abdallah Alghamdi <abod707@users.noreply.github.com>",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron .",
+    "verify": "node scripts/verify-pipeline.js",
+    "dist": "electron-builder --win --publish never",
+    "dist:publish": "electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.3.0"
+  },
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "xyz.abdallahalghamdi.scribe",
+    "productName": "Scribe",
+    "copyright": "MIT Licensed",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ],
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "Scribe"
+    }
+  }
+}
