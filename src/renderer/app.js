@@ -9,7 +9,8 @@ const state = {
   sources: [],
   running: false,
   activeTab: 'summary',
-  last: { summary: '', transcript: '', segments: [], outputDir: '', source: '' }
+  last: { summary: '', transcript: '', segments: [], outputDir: '', source: '' },
+  live: { running: false, recorder: null, streams: [], timer: null, startedAt: 0, text: '', segments: [], transcriptPath: '', summarizing: false }
 };
 
 /* ---------- helpers ---------- */
@@ -290,6 +291,215 @@ async function run() {
   }
 }
 
+/* ---------- live meeting mode (renderer capture) ---------- */
+
+const LIVE_CHUNK_MS = 15000;
+
+function liveFmt(seconds) {
+  const t = Math.max(0, Math.floor(seconds));
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(Math.floor(t / 60))}:${pad(t % 60)}`;
+}
+
+function liveStatus(text, recording = state.live.running) {
+  const el = $('live-status');
+  el.textContent = text;
+  el.classList.toggle('rec', recording);
+}
+
+function appendLiveLine(startSeconds, text) {
+  const out = $('live-out');
+  const ph = out.querySelector('.placeholder');
+  if (ph) ph.remove();
+  const line = document.createElement('p');
+  line.className = 'live-line';
+  const stamp = document.createElement('span');
+  stamp.className = 'live-stamp';
+  stamp.textContent = `[${liveFmt(startSeconds)}] `;
+  line.append(stamp, document.createTextNode(text));
+  out.appendChild(line);
+  out.scrollTop = out.scrollHeight;
+}
+
+function handleLiveEvent(e) {
+  if (e.type !== 'live') return;
+  if (e.kind === 'log') log(e.message);
+  if (e.kind === 'segments') {
+    for (const s of e.segments || []) appendLiveLine(s.start, s.text);
+    if ((!e.segments || !e.segments.length) && e.text) appendLiveLine(e.index * 15, e.text);
+    state.live.text = [...state.live.text ? [state.live.text] : [], e.text].filter(Boolean).join('\n');
+    for (const s of e.segments || []) state.live.segments.push(s);
+  }
+}
+
+async function captureStreams() {
+  const wantMic = $('live-mic').checked;
+  const wantSystem = $('live-system').checked;
+  if (!wantMic && !wantSystem) throw new Error('Pick at least one audio source (mic or meeting audio).');
+  const streams = [];
+  if (wantSystem) {
+    // Chromium's display capture is the only reliable way to loop back system/meeting audio.
+    const disp = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    for (const t of disp.getVideoTracks()) t.stop(); // audio is what we want; drop the video track at once
+    if (!disp.getAudioTracks().length) throw new Error('No audio was shared — re-run and tick “Share audio” in the picker (or use mic only).');
+    streams.push(disp);
+  }
+  if (wantMic) {
+    streams.push(await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }));
+  }
+  return streams;
+}
+
+function recordNextChunk(stream, onChunk) {
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+  const rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 64000 });
+  const parts = [];
+  rec.ondataavailable = (ev) => { if (ev.data.size) parts.push(ev.data); };
+  rec.onstop = () => {
+    const blob = new Blob(parts, { type: 'audio/webm' });
+    if (blob.size > 800) onChunk(blob); // skip empty silence-only chunks
+  };
+  rec.start();
+  return rec;
+}
+
+function setLiveUi(running) {
+  state.live.running = running;
+  $('btn-live-start').classList.toggle('hidden', running);
+  $('btn-live-stop').classList.toggle('hidden', !running);
+  $('btn-live-cancel').classList.toggle('hidden', !running);
+  $('btn-live-summarize').classList.toggle('hidden', running || !state.live.text);
+  for (const id of ['live-mic', 'live-system']) $(id).disabled = running;
+}
+
+async function startLive() {
+  if (state.live.running || state.running) return;
+  const asrProvider = String(state.settings.asrModel).split(':')[0];
+  if (!state.settings.keys?.[asrProvider]?.present) {
+    log(`No ${asrProvider} API key saved — open Settings and paste a free one first.`, true);
+    $('settings-dialog').showModal();
+    return;
+  }
+  let streams;
+  try {
+    streams = await captureStreams();
+  } catch (err) {
+    log(`Could not start capture: ${err.message}`, true);
+    return;
+  }
+  const res = await window.scribe.liveStart();
+  if (!res.ok) {
+    for (const s of streams) for (const t of s.getTracks()) t.stop();
+    log(`Live start failed: ${res.message}`, true);
+    return;
+  }
+  log(`Live session started (${res.model}). Text appears as people talk; a small pause every 15 s is normal.`);
+  state.live.text = '';
+  state.live.segments = [];
+  state.live.transcriptPath = '';
+  state.live.streams = streams;
+  $('live-out').innerHTML = '';
+  $('pane-summary').innerHTML = '<div class="placeholder"><p>Summary shows up here after you stop a live session.</p></div>';
+  switchTab('live');
+  setLiveUi(true);
+  liveStatus('Recording…', true);
+
+  const ctx = new AudioContext();
+  state.live.ctx = ctx;
+  const dest = ctx.createMediaStreamDestination();
+  for (const s of streams) ctx.createMediaStreamSource(s).connect(dest);
+
+  const sendChunk = async (blob) => {
+    try {
+      await window.scribe.liveChunk(new Uint8Array(await blob.arrayBuffer()));
+    } catch (err) {
+      log(`Chunk upload failed: ${err.message}`, true);
+    }
+  };
+  const next = () => {
+    if (!state.live.running) return;
+    if (state.live.recorder?.state === 'recording') return; // a recorder is already open
+    state.live.recorder = recordNextChunk(dest.stream, (blob) => { sendChunk(blob).then(next); });
+  };
+  // First chunk goes out after LIVE_CHUNK_MS, then the recorder restarts (self-contained webm files).
+  state.live.recorder = recordNextChunk(dest.stream, (blob) => { sendChunk(blob).then(next); });
+  state.live.timer = setInterval(() => {
+    if (!state.live.running) return;
+    if (state.live.recorder?.state === 'recording') state.live.recorder.stop();
+    else next();
+    liveStatus(`Recording… ${liveFmt((Date.now() - state.live.startedAt) / 1000)}`, true);
+  }, LIVE_CHUNK_MS);
+  state.live.startedAt = Date.now();
+
+  // If the user ends screen sharing from the browser bar, stop gracefully.
+  for (const s of streams) {
+    s.getAudioTracks().forEach((t) => { t.onended = () => { if (state.live.running) stopLive(); }; });
+  }
+}
+
+async function stopLive(cancelled = false) {
+  if (!state.live.running) return;
+  if (state.live.timer) clearInterval(state.live.timer);
+  state.live.timer = null;
+  try { if (state.live.recorder?.state !== 'inactive') state.live.recorder.stop(); } catch { /* already stopped */ }
+  // Give the final blob a moment to flush through ondataavailable/onstop.
+  await new Promise((r) => setTimeout(r, 400));
+  for (const s of state.live.streams) for (const t of s.getTracks()) t.stop();
+  state.live.streams = [];
+  try { await state.live.ctx?.close(); } catch { /* already closed */ }
+  setLiveUi(false);
+
+  if (cancelled) {
+    await window.scribe.liveCancel();
+    liveStatus('Cancelled.');
+    log('Live session cancelled.');
+    return;
+  }
+  liveStatus('Finishing up — transcribing the last chunk…', false);
+  const res = await window.scribe.liveStop();
+  if (!res.ok) {
+    liveStatus(`Failed: ${res.message}`);
+    log(`Live stop failed: ${res.message}`, true);
+    return;
+  }
+  state.live.text = res.transcript;
+  state.live.segments = res.segments || [];
+  state.live.transcriptPath = res.txtPath;
+  state.last.transcript = res.transcript;
+  state.last.segments = res.segments || [];
+  state.last.outputDir = res.outputDir;
+  state.last.source = `Live session ${new Date().toLocaleString()}`;
+  const stamp = liveFmt(res.elapsed);
+  $('pane-transcript').innerHTML = `<div class="prose"><p class="dim">Live session — ${stamp}, ${res.chunks} chunks, ${(res.transcript || '').length.toLocaleString()} characters. Saved to ${escapeHtml(res.txtPath)}</p><pre style="white-space:pre-wrap">${escapeHtml(res.transcript || '(nothing captured)')}</pre></div>`;
+  setLiveUi(false);
+  liveStatus(`Saved — ${stamp} of audio → ${res.txtPath}`, false);
+  log(`Live transcript saved: ${res.txtPath}${res.errors ? ` (${res.errors} chunk(s) failed and were skipped)` : ''}`);
+  if (res.errors) $('btn-live-summarize').classList.toggle('hidden', !state.live.text);
+}
+
+async function summarizeLive() {
+  if (!state.live.text || state.live.summarizing) return;
+  state.live.summarizing = true;
+  $('btn-live-summarize').disabled = true;
+  liveStatus('Summarizing…', false);
+  try {
+    const res = await window.scribe.liveSummarize(state.live.text);
+    if (!res.ok) {
+      log(`Summary failed: ${res.message}`, true);
+      liveStatus(`Summary failed: ${res.message}`, false);
+      return;
+    }
+    state.last.summary = res.markdown;
+    $('pane-summary').innerHTML = `<div class="prose">${renderMarkdown(res.markdown)}</div>`;
+    log(`Summary saved: ${res.mdPath}`);
+    switchTab('summary');
+    liveStatus('Summary ready.', false);
+  } finally {
+    state.live.summarizing = false;
+    $('btn-live-summarize').disabled = false;
+  }
+}
+
 /* ---------- export ---------- */
 
 async function saveAs() {
@@ -297,9 +507,9 @@ async function saveAs() {
   const p = await window.scribe.saveExport({
     kind,
     source: state.last.source,
-    transcript: state.last.transcript,
+    transcript: state.activeTab === 'live' ? state.live.text : state.last.transcript,
     summary: state.last.summary,
-    segments: state.last.segments
+    segments: state.activeTab === 'live' ? state.live.segments : state.last.segments
   });
   if (p) log(`Saved ${p}`);
 }
@@ -321,12 +531,19 @@ async function init() {
   });
   $('btn-run').addEventListener('click', run);
   $('btn-cancel').addEventListener('click', () => { log('Cancelling…'); window.scribe.cancelJob(); });
+  $('btn-live-start').addEventListener('click', startLive);
+  $('btn-live-stop').addEventListener('click', () => stopLive(false));
+  $('btn-live-cancel').addEventListener('click', () => stopLive(true));
+  $('btn-live-summarize').addEventListener('click', summarizeLive);
+  window.scribe.onLiveEvent(handleLiveEvent);
   $('btn-settings').addEventListener('click', () => $('settings-dialog').showModal());
   $('btn-close').addEventListener('click', () => $('settings-dialog').close());
 
   document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
   $('btn-copy').addEventListener('click', async () => {
-    const text = state.activeTab === 'transcript' ? state.last.transcript : state.last.summary;
+    const text = state.activeTab === 'transcript' ? state.last.transcript
+      : state.activeTab === 'live' ? state.live.text
+      : state.last.summary;
     if (!text) return log('Nothing to copy yet.', true);
     await window.scribe.copy(text);
     log('Copied to clipboard.');

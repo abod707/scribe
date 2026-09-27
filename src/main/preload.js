@@ -11,6 +11,16 @@ contextBridge.exposeInMainWorld('scribe', {
   pickOutputDir: () => ipcRenderer.invoke('dialog:outputDir'),
   startJob: (payload) => ipcRenderer.invoke('job:start', payload),
   cancelJob: () => ipcRenderer.invoke('job:cancel'),
+  liveStart: () => ipcRenderer.invoke('live:start'),
+  liveChunk: (bytes) => ipcRenderer.invoke('live:chunk', bytes),
+  liveStop: () => ipcRenderer.invoke('live:stop'),
+  liveCancel: () => ipcRenderer.invoke('live:cancel'),
+  liveSummarize: (transcript) => ipcRenderer.invoke('live:summarize', { transcript }),
+  onLiveEvent: (cb) => {
+    const handler = (_e, event) => cb(event);
+    ipcRenderer.on('live:event', handler);
+    return () => ipcRenderer.removeListener('live:event', handler);
+  },
   saveExport: (payload) => ipcRenderer.invoke('export:save', payload),
   openPath: (p) => ipcRenderer.invoke('shell:openPath', p),
   showInFolder: (p) => ipcRenderer.invoke('shell:showItemInFolder', p),

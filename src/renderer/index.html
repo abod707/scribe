@@ -80,6 +80,7 @@
       <div class="tabs">
         <button class="tab active" data-tab="summary">Summary</button>
         <button class="tab" data-tab="transcript">Transcript</button>
+        <button class="tab" data-tab="live" id="tab-live">Live</button>
         <button class="tab" data-tab="log">Activity</button>
         <span class="spacer"></span>
         <button class="ghost small" id="btn-copy">Copy</button>
@@ -95,6 +96,20 @@
       </div>
       <div class="pane" id="pane-transcript">
         <div class="placeholder"><p>Full transcript with timestamps shows up here.</p></div>
+      </div>
+      <div class="pane" id="pane-live">
+        <div class="live-controls">
+          <button class="primary" id="btn-live-start">● Start live transcription</button>
+          <button class="danger hidden" id="btn-live-stop">■ Stop &amp; save</button>
+          <button class="ghost hidden" id="btn-live-cancel">Cancel</button>
+          <button class="ghost hidden" id="btn-live-summarize">Summarize live transcript</button>
+          <span class="live-status" id="live-status">Not recording.</span>
+        </div>
+        <div class="live-sources">
+          <label class="check"><input type="checkbox" id="live-mic" checked /> My microphone</label>
+          <label class="check"><input type="checkbox" id="live-system" checked /> Meeting / other participants <span class="dim">(pick any window, keep “share audio” ticked)</span></label>
+        </div>
+        <div class="live-out" id="live-out"><div class="placeholder"><p>Hit <b>Start live transcription</b>, join your meeting, and the transcript streams here with timestamps. On stop it is saved to your output folder and can be summarized.</p></div></div>
       </div>
       <div class="pane" id="pane-log">
         <pre id="log"></pre>

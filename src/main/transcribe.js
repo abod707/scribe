@@ -21,7 +21,7 @@ function normalizeSegments(payload, startSeconds) {
     .filter((s) => s.text);
 }
 
-async function transcribePart({ providerId, model, apiKey, file, startSeconds = 0, language, diarize, signal, onLog = () => {} }) {
+async function transcribePart({ providerId, model, apiKey, file, startSeconds = 0, language, diarize, signal, onLog = () => {}, mimeType = 'audio/mpeg' }) {
   const provider = getProvider(providerId);
   const bytes = fs.statSync(file).size;
   if (bytes > provider.maxUploadBytes) {
@@ -55,7 +55,7 @@ async function transcribePart({ providerId, model, apiKey, file, startSeconds = 
         makeBody: () => {
           const form = new FormData();
           const buf = fs.readFileSync(file);
-          form.append('file', new Blob([buf], { type: 'audio/mpeg' }), path.basename(file));
+          form.append('file', new Blob([buf], { type: mimeType }), path.basename(file).replace(/\.[a-z0-9]+$/i, mimeType === 'audio/webm' ? '.webm' : '.mp3'));
           form.append('model', model);
           if (opts.language && language && language !== 'auto') form.append('language', language);
           if (providerId === 'groq') {

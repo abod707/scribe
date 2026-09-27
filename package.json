@@ -1,7 +1,7 @@
 {
   "name": "scribe",
   "productName": "Scribe",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Transcribe audio and video with free-tier APIs (Groq Whisper, Mistral Voxtral) and summarize the result with free-tier LLMs. Windows desktop app.",
   "main": "src/main/main.js",
   "author": "Abdallah Alghamdi <abod707@users.noreply.github.com>",
@@ -11,6 +11,7 @@
     "start": "electron .",
     "smoke": "electron . --no-sandbox --disable-gpu --disable-gpu-compositing --disable-dev-shm-usage",
     "verify": "node scripts/verify-pipeline.js",
+    "verify:live": "node scripts/verify-live.js",
     "dist": "electron-builder --win --publish never",
     "dist:publish": "electron-builder --win --publish always"
   },
@@ -39,8 +40,18 @@
     ],
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "zip", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "artifactName": "${productName}-${version}-win-${arch}.${ext}"
     },

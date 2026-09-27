@@ -74,12 +74,30 @@ very long files in one shot, and mixing engines across the transcribe / summaris
   continuous across parts.
 - **Cancelling** kills ffmpeg and the in-flight request and cleans up its temp files.
 
+## Live meeting mode
+
+The **Live** tab turns Scribe into a real-time meeting assistant — no bot joins the call:
+
+1. Tick your sources: **My microphone** (your voice) and/or **Meeting / other participants**
+   (system audio — Windows shows the share picker; pick any window and tick **Share audio**).
+2. Hit **Start live transcription**, then join Zoom/Teams/Meet as usual.
+3. The transcript streams into the window with `mm:ss` timestamps, one chunk (~15 s) at a time.
+   Latency is roughly "when the speaker pauses + a second".
+4. Hit **Stop & save** — the timestamped transcript is written to
+   `Downloads\Scribe\Live-<date>.txt`, and **Summarize live transcript** runs the same
+   map-reduce summary as file mode and saves the Markdown next to it.
+
+How it works: the renderer records self-contained WebM/Opus chunks (mic + loopback mixed),
+the main process transcribes them in order with your configured ASR model, and a failing chunk
+is skipped with a log line instead of killing the session. Copy/Save also work on the Live tab.
+
 ## Build from source
 
 ```bash
 npm install
 npm start          # run the app
 npm run verify     # headless end-to-end test: real ffmpeg + a mock Groq/Mistral server
+npm run verify:live  # headless test of live mode: chunks -> ordered transcript + failure tolerance
 npm run dist       # electron-builder --win  (produce the installer)
 ```
 

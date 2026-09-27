@@ -6,8 +6,10 @@ const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('elect
 const { Settings } = require('./settings');
 const { PROVIDERS, getProvider } = require('./providers');
 const { runJob } = require('./pipeline');
-const { windowText } = require('./summarize');
+const { windowText, summarizeTranscript } = require('./summarize');
 const { writeOutputs, toSrt } = require('./export');
+const { LiveSession, toTimestampedText } = require('./live');
+const { parseModelRef } = require('./providers');
 
 app.setName('Scribe');
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -168,6 +170,109 @@ app.whenReady().then(() => {
     return res.filePath;
   });
 
+/* ---------- live meeting mode ---------- */
+
+let liveSession = null;
+
+function sendLive(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('live:event', event);
+}
+
+function resolveAsr() {
+  const { provider: providerId, model } = parseModelRef(settings.get('asrModel'));
+  const apiKey = settings.getKey(providerId);
+  if (!apiKey) throw new Error(`No ${providerId} API key saved — open Settings and add a free key first.`);
+  return { providerId, model, apiKey };
+}
+
+ipcMain.handle('live:start', () => {
+  if (liveSession && !liveSession.finished) return { ok: false, message: 'A live session is already running.' };
+  try {
+    const asr = resolveAsr();
+    liveSession = new LiveSession({ onEvent: sendLive });
+    liveSession.configure({
+      providerId: asr.providerId,
+      model: asr.model,
+      apiKey: asr.apiKey,
+      language: settings.get('outputLanguage') === 'same' ? undefined : settings.get('outputLanguage')
+    });
+    liveSession.start();
+    return { ok: true, model: `${asr.providerId}:${asr.model}` };
+  } catch (err) {
+    sendLive({ type: 'live', kind: 'log', message: err.message });
+    return { ok: false, message: err.message };
+  }
+});
+
+ipcMain.handle('live:chunk', (_e, bytes) => {
+  if (!liveSession || liveSession.finished) return false;
+  liveSession.pushChunk(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+  return true;
+});
+
+ipcMain.handle('live:stop', async () => {
+  if (!liveSession) return { ok: false, message: 'No live session.' };
+  const session = liveSession;
+  try {
+    const { text, segments, elapsed, chunks, errors } = await session.stop();
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const outDir = settings.get('outputDir') || path.join(app.getPath('downloads'), 'Scribe');
+    fs.mkdirSync(outDir, { recursive: true });
+    const base = path.join(outDir, `Live-${stamp}`);
+    const txtPath = `${base}.txt`;
+    fs.writeFileSync(txtPath, toTimestampedText(segments, text), 'utf8');
+    if (settings.get('keepAudio')) {
+      const keep = path.join(outDir, `Live-${stamp}-chunks`);
+      fs.mkdirSync(keep, { recursive: true });
+      for (const f of fs.readdirSync(session.dir)) fs.copyFileSync(path.join(session.dir, f), path.join(keep, f));
+    }
+    session.cleanup();
+    return { ok: true, transcript: text, segments, elapsed, chunks, errors, txtPath, outputDir: outDir };
+  } catch (err) {
+    session.cleanup();
+    liveSession = null;
+    return { ok: false, message: err.message };
+  } finally {
+    if (liveSession === session) liveSession = null;
+  }
+});
+
+ipcMain.handle('live:cancel', () => {
+  if (liveSession) {
+    liveSession.cancel();
+    liveSession.cleanup();
+    liveSession = null;
+  }
+  return true;
+});
+
+// Summarize a finished live transcript with the configured chat model (same map-reduce as files).
+ipcMain.handle('live:summarize', async (_e, { transcript }) => {
+  const { provider: providerId, model } = parseModelRef(settings.get('chatModel'));
+  const apiKey = settings.getKey(providerId);
+  if (!apiKey) return { ok: false, message: `No ${providerId} API key saved — open Settings and add a free key.` };
+  try {
+    const result = await summarizeTranscript({
+      transcript,
+      providerId,
+      model,
+      apiKey,
+      style: settings.get('summaryStyle') || 'general',
+      language: settings.get('outputLanguage') || 'same',
+      translateToEnglish: Boolean(settings.get('translateToEnglish')),
+      onLog: (m) => sendLive({ type: 'live', kind: 'log', message: m })
+    });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const outDir = settings.get('outputDir') || path.join(app.getPath('downloads'), 'Scribe');
+    fs.mkdirSync(outDir, { recursive: true });
+    const mdPath = path.join(outDir, `Live-${stamp}.summary.md`);
+    fs.writeFileSync(mdPath, result.markdown, 'utf8');
+    return { ok: true, markdown: result.markdown, mdPath };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+});
+
   createWindow();
 
   // Headless verification hook: render, screenshot, exit. Used by CI/dev smoke tests.
@@ -186,6 +291,7 @@ app.whenReady().then(() => {
         try {
           await shot('');
           await shot('activity', 'document.querySelector(\'[data-tab="log"]\').click(); document.querySelector("#url-input").value="https://www.youtube.com/watch?v=dQw4w9WgXcQ"; document.querySelector("#btn-url").click(); "ok"');
+          await shot('live', 'document.querySelector(\'[data-tab="live"]\').click(); "ok"');
           await shot('settings', 'document.getElementById("settings-dialog").showModal(); "ok"');
           await shot('settings-bottom', 'const f=document.querySelector(".dialog-body"); f.scrollTop=f.scrollHeight; "ok"');
           console.log(`SMOKE_OK ${out}`);
