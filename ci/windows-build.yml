@@ -23,6 +23,8 @@ jobs:
       - run: npm ci
       - name: Pipeline verification (mock provider + real ffmpeg)
         run: npm run verify
+      - name: Live-mode verification (mock provider + webm chunks)
+        run: npm run verify:live
       - name: Renderer smoke test (headless Electron screenshot)
         run: |
           sudo apt-get update -qq
