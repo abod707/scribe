@@ -1,0 +1,74 @@
+name: windows-build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Pipeline verification (mock provider + real ffmpeg)
+        run: npm run verify
+      - name: Renderer smoke test (headless Electron screenshot)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb
+          SCRIBE_SMOKE=1 SCRIBE_SMOKE_OUT="$PWD/smoke.png" xvfb-run -a --server-args="-screen 0 1400x900x24" npx electron . --no-sandbox --disable-gpu --disable-gpu-compositing --disable-dev-shm-usage
+          test -s smoke.png && echo "renderer rendered to smoke.png"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renderer-screenshots
+          path: smoke*.png
+
+  build-windows:
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Confirm the bundled ffmpeg is a Windows binary
+        shell: pwsh
+        run: |
+          node -e "const p=require('ffmpeg-static'); console.log('ffmpeg:', p); const fs=require('fs'); if(!fs.existsSync(p)) { throw new Error('ffmpeg-static binary missing'); }"
+      - name: Build installer + portable zip
+        run: npx electron-builder --win --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scribe-windows
+          path: |
+            release/*.exe
+            release/*.zip
+            release/latest.yml
+          if-no-files-found: error
+
+      - name: Attach artifacts to the release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $files = @(Get-ChildItem release -Include *.exe,*.zip,latest.yml -File -Recurse | ForEach-Object { $_.FullName })
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release create $tag --title "Scribe $tag" --notes "Windows build. See README for the free API keys." }
+          foreach ($f in $files) { gh release upload $tag $f --clobber }
