@@ -17,6 +17,8 @@ Bring your own free key; nothing is sent anywhere else, and there is no account,
                                                                   (Groq / Mistral chat)
 ```
 
+![Scribe](docs/screenshot.png)
+
 ## Install
 
 Grab the installer from the [Releases](../../releases) page:

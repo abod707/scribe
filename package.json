@@ -9,7 +9,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "smoke": "electron .",
+    "smoke": "electron . --no-sandbox --disable-gpu --disable-gpu-compositing --disable-dev-shm-usage",
     "verify": "node scripts/verify-pipeline.js",
     "dist": "electron-builder --win --publish never",
     "dist:publish": "electron-builder --win --publish always"

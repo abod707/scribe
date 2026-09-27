@@ -174,10 +174,20 @@ app.whenReady().then(() => {
   if (process.env.SCRIBE_SMOKE) {
     mainWindow.webContents.once('did-finish-load', () => {
       setTimeout(async () => {
-        try {
+        const out = process.env.SCRIBE_SMOKE_OUT || path.join(process.cwd(), 'smoke.png');
+        const shot = async (suffix, extraJs) => {
+          if (extraJs) await mainWindow.webContents.executeJavaScript(extraJs, true);
+          await new Promise((r) => setTimeout(r, 400));
           const image = await mainWindow.webContents.capturePage();
-          const out = process.env.SCRIBE_SMOKE_OUT || path.join(process.cwd(), 'smoke.png');
-          fs.writeFileSync(out, image.toPNG());
+          const file = suffix ? out.replace(/\.png$/, `.${suffix}.png`) : out;
+          fs.writeFileSync(file, image.toPNG());
+          console.log(`SMOKE_SHOT ${file}`);
+        };
+        try {
+          await shot('');
+          await shot('activity', 'document.querySelector(\'[data-tab="log"]\').click(); document.querySelector("#url-input").value="https://www.youtube.com/watch?v=dQw4w9WgXcQ"; document.querySelector("#btn-url").click(); "ok"');
+          await shot('settings', 'document.getElementById("settings-dialog").showModal(); "ok"');
+          await shot('settings-bottom', 'const f=document.querySelector(".dialog-body"); f.scrollTop=f.scrollHeight; "ok"');
           console.log(`SMOKE_OK ${out}`);
         } catch (err) {
           console.log(`SMOKE_FAIL ${err.message}`);

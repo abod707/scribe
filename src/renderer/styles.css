@@ -135,15 +135,21 @@ pre#log .err { color: var(--danger); }
 
 dialog {
   border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text);
-  width: 640px; max-width: 92vw; padding: 0;
+  width: 660px; max-width: 92vw; padding: 0;
 }
 dialog::backdrop { background: rgba(4, 7, 12, .68); }
-.dialog-body { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; max-height: 86vh; overflow: auto; }
+.dialog-body { padding: 18px 22px 0; display: flex; flex-direction: column; gap: 12px; max-height: 84vh; overflow: auto; }
 .dialog-body h2 { margin: 0; font-size: 16px; }
-fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 0; }
+fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 0; }
 legend { font-size: 12px; color: var(--dim); padding: 0 6px; }
+legend .link { margin-left: 6px; color: var(--accent); text-decoration: none; }
 .key-row { display: flex; gap: 8px; align-items: center; }
 .key-row input { flex: 1; }
 .hint { font-size: 11.5px; color: var(--dim); display: block; margin-top: 8px; }
-.dialog-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dialog-actions {
+  position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 22px; margin: 4px -22px 0; background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.dialog-actions .hint { margin-top: 0; max-width: 60%; }
 .link { color: var(--accent); text-decoration: none; }
